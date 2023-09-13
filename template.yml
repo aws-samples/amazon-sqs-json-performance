@@ -1,0 +1,338 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: An AWS Lambda application that sends/receives/deletes message to SQS.
+Resources:
+  AwsQueryProfiler:
+    Type: AWS::CodeGuruProfiler::ProfilingGroup
+    Properties:
+      ComputePlatform: 'AWSLambda'
+      ProfilingGroupName: 'SqsLambdaQueryProfiler'
+      AgentPermissions:
+        Principals:
+          - Fn::GetAtt: [ functionRole, Arn ]
+  AwsJsonProfiler:
+    Type: AWS::CodeGuruProfiler::ProfilingGroup
+    Properties:
+      ComputePlatform: 'AWSLambda'
+      ProfilingGroupName: 'SqsLambdaJsonProfiler'
+      AgentPermissions:
+        Principals:
+          - Fn::GetAtt: [ functionRole, Arn ]
+  PerfTestQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: 'PerfTestQueue'
+  AwsQueryOrchestrator:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: 'AwsQueryOrchestrator'
+      VisibilityTimeout: 60
+  AwsJsonOrchestrator:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: 'AwsJsonOrchestrator'
+      VisibilityTimeout: 60
+  AwsQueryFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      CodeUri: target/amazon-sqs-json-performance-1.0-SNAPSHOT.jar
+      Handler: example.handler.AwsQueryHandler
+      Runtime: java8.al2
+      Description: Java function
+      MemorySize: 512
+      Timeout: 50
+      Layers:
+        - !Sub 'arn:aws:lambda:${AWS::Region}:157417159150:layer:AWSCodeGuruProfilerJavaAgentLayer:5'
+        - !Sub 'arn:aws:lambda:${AWS::Region}:580247275435:layer:LambdaInsightsExtension:14'
+      Role:
+        Fn::GetAtt: [ functionRole, Arn ]
+      Environment:
+        Variables:
+          AWS_CODEGURU_PROFILER_ENABLED: 'TRUE'
+          AWS_CODEGURU_PROFILER_GROUP_NAME: 'SqsLambdaQueryProfiler'
+          AWS_CODEGURU_PROFILER_TARGET_REGION: !Sub '${AWS::Region}'
+          JAVA_TOOL_OPTIONS: '-javaagent:/opt/codeguru-profiler-java-agent-standalone.jar'
+          AWS_ACCOUNT_ID: !Ref "AWS::AccountId"
+  AwsJsonFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      CodeUri: target/amazon-sqs-json-performance-1.0-SNAPSHOT.jar
+      Handler: example.handler.AwsJsonHandler
+      Runtime: java8.al2
+      Description: Java function
+      MemorySize: 512
+      Timeout: 50
+      Layers:
+        - !Sub 'arn:aws:lambda:${AWS::Region}:157417159150:layer:AWSCodeGuruProfilerJavaAgentLayer:5'
+        - !Sub 'arn:aws:lambda:${AWS::Region}:580247275435:layer:LambdaInsightsExtension:14'
+      Role:
+        Fn::GetAtt: [ functionRole, Arn ]
+      Environment:
+        Variables:
+          AWS_CODEGURU_PROFILER_ENABLED: 'TRUE'
+          AWS_CODEGURU_PROFILER_GROUP_NAME: 'SqsLambdaJsonProfiler'
+          AWS_CODEGURU_PROFILER_TARGET_REGION: !Sub '${AWS::Region}'
+          JAVA_TOOL_OPTIONS: '-javaagent:/opt/codeguru-profiler-java-agent-standalone.jar'
+          AWS_ACCOUNT_ID: !Ref "AWS::AccountId"
+  AwsQueryMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt AwsQueryOrchestrator.Arn
+      FunctionName: !GetAtt AwsQueryFunction.Arn
+      BatchSize: 1
+  AwsJsonMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt AwsJsonOrchestrator.Arn
+      FunctionName: !GetAtt AwsJsonFunction.Arn
+      BatchSize: 1
+  functionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: [ 'sts:AssumeRole' ]
+          Effect: Allow
+          Principal:
+            Service: [ lambda.amazonaws.com ]
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSLambda_ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+        - arn:aws:iam::aws:policy/AmazonCodeGuruProfilerAgentAccess
+        - arn:aws:iam::aws:policy/CloudWatchLambdaInsightsExecutionRolePolicy
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+      Policies:
+        {Ref: 'AWS::NoValue'}
+  SqsLambdaDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'SqsLambdaDashboard-${AWS::Region}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "height": 6,
+              "width": 6,
+              "x": 0,
+              "y": 0,
+              "type": "metric",
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "Duration p50",
+                "legend": {
+                  "position": "bottom"
+                },
+                "timezone": "Local",
+                "metrics": [
+                  [ "AWS/Lambda", "Duration", "FunctionName", "${AwsQueryFunction}", { "id": "expr1m0", "label": "Query p50 [avg: ${!AVG}]", "stat": "p50", "yAxis": "left" } ],
+                  [ "...", "${AwsJsonFunction}", { "id": "expr3m0", "label": "Json p50 [avg: ${!AVG}]", "stat": "p50", "yAxis": "left" } ]
+                ],
+                "liveData": false,
+                "period": 60,
+                "view": "timeSeries",
+                "yAxis": {
+                  "left": {
+                    "showUnits": false,
+                    "label": ""
+                  }
+                }
+              }
+            },
+            {
+              "height": 6,
+              "width": 6,
+              "x": 6,
+              "y": 0,
+              "type": "metric",
+              "properties": {
+                  "metrics": [
+                      [ { "expression": "(expr1m0-expr3m0)/expr1m0*100", "label": "Reduction (%) [avg: ${!AVG}] ", "id": "e1", "yAxis": "left" } ],
+                      [ "AWS/Lambda", "Duration", "FunctionName", "${AwsQueryFunction}", { "id": "expr1m0", "label": "Query p50", "yAxis": "left", "visible": false } ],
+                      [ "...", "${AwsJsonFunction}", { "id": "expr3m0", "label": "Json p50", "yAxis": "left", "visible": false } ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "JSON Lambda Duration p50 Reduction",
+                  "legend": {
+                      "position": "bottom"
+                  },
+                  "timezone": "LOCAL",
+                  "liveData": false,
+                  "period": 60,
+                  "view": "timeSeries",
+                  "yAxis": {
+                      "left": {
+                          "showUnits": false,
+                          "label": "%"
+                      }
+                  },
+                  "stat": "p50",
+                  "stacked": false,
+                  "setPeriodToTimeRange": true
+              }
+            },
+            {
+              "height": 6,
+              "width": 6,
+              "x": 12,
+              "y": 0,
+              "type": "metric",
+              "properties": {
+                  "region": "${AWS::Region}",
+                  "title": "CPU Usage p50",
+                  "legend": {
+                      "position": "bottom"
+                  },
+                  "timezone": "Local",
+                  "metrics": [
+                      [ "LambdaInsights", "cpu_total_time", "function_name", "${AwsQueryFunction}", { "id": "expr1m0", "label": "Query p50 [avg: ${!AVG}]", "stat": "p50", "yAxis": "left" } ],
+                      [ "...", "${AwsJsonFunction}", { "id": "expr3m0", "label": "Json p50 [avg: ${!AVG}]", "stat": "p50", "yAxis": "left" } ]
+                  ],
+                  "liveData": false,
+                  "period": 60,
+                  "yAxis": {
+                      "left": {
+                          "showUnits": false,
+                          "label": "Milliseconds"
+                      }
+                  },
+                  "view": "timeSeries",
+                  "stacked": false
+              }
+            },
+            {
+              "height": 6,
+              "width": 6,
+              "x": 18,
+              "y": 0,
+              "type": "metric",
+              "properties": {
+                    "metrics": [
+                        [ { "expression": "(expr1m0-expr3m0)/expr1m0*100", "label": "Reduction (%) [avg: ${!AVG}]", "id": "e1" } ],
+                        [ "LambdaInsights", "cpu_total_time", "function_name", "${AwsQueryFunction}", { "id": "expr1m0", "label": "Query p50", "yAxis": "left", "visible": false } ],
+                        [ "...", "${AwsJsonFunction}", { "id": "expr3m0", "label": "Json p50", "yAxis": "left", "visible": false } ]
+                    ],
+                    "region": "${AWS::Region}",
+                    "title": "JSON Lambda CPU Usage Reduction",
+                    "legend": {
+                        "position": "bottom"
+                    },
+                    "timezone": "LOCAL",
+                    "liveData": false,
+                    "period": 60,
+                    "yAxis": {
+                        "left": {
+                            "showUnits": false,
+                            "label": "%"
+                        }
+                    },
+                    "view": "timeSeries",
+                    "stacked": false,
+                    "stat": "p50"
+              }
+            },
+            {
+              "height": 6,
+              "width": 6,
+              "x": 0,
+              "y": 6,
+              "type": "metric",
+              "properties": {
+                  "metrics": [
+                      [ "LambdaInsights", "total_network", "function_name", "${AwsQueryFunction}", { "label": "Query avg", "stat": "Average", "yAxis": "left" } ],
+                      [ "...", "${AwsJsonFunction}", { "label": "Json avg", "stat": "Average", "yAxis": "left" } ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Network Usage",
+                  "legend": {
+                      "position": "bottom"
+                  },
+                  "timezone": "Local",
+                  "liveData": false,
+                  "period": 60,
+                  "yAxis": {
+                      "left": {
+                          "showUnits": false,
+                          "label": "Bytes"
+                      }
+                  },
+                  "view": "timeSeries",
+                  "stacked": false
+              }
+            },
+            {
+              "height": 6,
+              "width": 6,
+              "x": 6,
+              "y": 6,
+              "type": "metric",
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "Invocations & Errors",
+                "legend": {
+                  "position": "bottom"
+                },
+                "timezone": "Local",
+                "metrics": [
+                  [ "AWS/Lambda", "Invocations", "FunctionName", "${AwsQueryFunction}", { "id": "mm1m0", "label": "Query Invocations", "stat": "Sum", "yAxis": "left" } ],
+                  [ ".", "Errors", ".", ".", { "id": "mm2m0", "label": "Query Errors", "stat": "Sum", "yAxis": "left" } ],
+                  [ "AWS/Lambda", "Invocations", "FunctionName", "${AwsJsonFunction}", { "id": "mm3m0", "label": "Json Invocations", "stat": "Sum", "yAxis": "left" } ],
+                  [ ".", "Errors", ".", ".", { "id": "mm4m0", "label": "Json Errors", "stat": "Sum", "yAxis": "left" } ]
+                ],
+                "liveData": false,
+                "period": 60,
+                "view": "timeSeries",
+                "yAxis": {
+                  "left": {
+                    "showUnits": false,
+                    "label": "Sum"
+                  },
+                  "right": {
+                    "showUnits": false,
+                    "label": "Sum"
+                  }
+                }
+              }
+            },
+            {
+              "height": 6,
+              "width": 6,
+              "x": 0,
+              "y": 12,
+              "type": "metric",
+              "properties": {
+                  "view": "timeSeries",
+                  "stacked": false,
+                  "metrics": [
+                      [ "AWS/SQS", "NumberOfMessagesSent", "QueueName", "${PerfTestQueue.QueueName}", { "stat": "Sum" } ],
+                      [ ".", "NumberOfMessagesDeleted", ".", ".", { "stat": "Sum" } ],
+                      [ ".", "NumberOfMessagesReceived", ".", ".", { "stat": "Sum" } ],
+                      [ ".", "SentMessageSize", ".", ".", { "yAxis": "right" } ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "TargetQueue Message Details",
+                  "period": 60
+              }
+            },
+            {
+              "height": 6,
+              "width": 6,
+              "x": 6,
+              "y": 12,
+              "type": "metric",
+              "properties": {
+                  "view": "timeSeries",
+                  "stacked": false,
+                  "region": "${AWS::Region}",
+                  "title": "TargetQueue Queue Details",
+                  "period": 60,
+                  "metrics": [
+                      [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${PerfTestQueue.QueueName}" ],
+                      [ ".", "ApproximateNumberOfMessagesNotVisible", ".", "." ]
+                  ]
+              }
+            }
+          ]
+        }

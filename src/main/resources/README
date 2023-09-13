@@ -1,0 +1,46 @@
+The JAR file `src/main/resources/aws-java-json-sdk-sqs-1.0.jar` is a repackaged version of the [SQS JSON preview](https://aws.amazon.com/about-aws/whats-new/2023/07/json-protocol-support-amazon-sqs/) SDK version. It has been repackaged to avoid namepsace conflicts between the two SQS SDKs that are used in this test. You can regenrate the JAR file on your end by using the SQS JSON preview SDK with the maven shade plugin. An example pom.xml should contain the following configuration:
+
+
+```
+   <dependencies>
+        <dependency>
+            <groupId>com.amazonaws</groupId>
+            <artifactId>aws-java-sdk-sqs</artifactId>
+            <version>1.12.516</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <createDependencyReducedPom>false</createDependencyReducedPom>
+                    <relocations>
+                        <relocation>
+                            <pattern>com.amazonaws.services.sqs</pattern>
+                            <shadedPattern>com.amazonaws.services.sqs.json</shadedPattern>
+                        </relocation>
+                    </relocations>
+                    <artifactSet>
+                        <includes>
+                            <include>com.amazonaws:aws-java-sdk-sqs:jar:</include>
+                            <exclude>com.amazonaws:*:jar:</exclude>
+                        </includes>
+                    </artifactSet>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>`
+                            <goal>shade</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+```
+
